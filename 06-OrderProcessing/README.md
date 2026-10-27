@@ -219,3 +219,76 @@ To satisfy the strict requirements of racing multiple asynchronous providers (R1
 1. **First-to-Finish Wins (R2):** `Task.WhenAny` monitors multiple tasks simultaneously and returns the reference of whichever task completes first, enabling optimal performance by not waiting for slower services.
 2. **Resilience to Early Failures (R2):** Unlike simple race implementations that crash on the first error, our loop inspects `finishedTask.IsCompletedSuccessfully`. If the fastest-finishing carrier fails, the service ignores it and continues awaiting the remaining active tasks.
 3. **Immediate Resource Cancellation (R3 & R6):** A linked `CancellationTokenSource` tied to a 1.2-second hard time budget (`TimeSpan.FromSeconds(1.2)`) and triggered upon the first successful quote automatically signals all remaining running carrier tasks to abort execution, saving network and CPU bandwidth.
+## Task 10.4 — Fraud Scoring & Controlled Concurrency Email Re-send
+
+### Part A: CPU-Bound Fraud Scoring
+* **Mechanism:** Utilizes `Parallel.For` configured with `ParallelOptions` matching `Environment.ProcessorCount`. 
+* **Thread Safety:** Results are safely aggregated across threads using a thread-safe `ConcurrentBag<int>` to guarantee zero loss or duplication of order IDs (R3).
+* **Performance:** Spreading the heavy mathematical calculations across available hardware threads achieves significant speed-ups proportional to physical/logical core counts.
+
+### Part B: I/O-Bound Email Re-send & Timing Explanation
+* **Concurrency Control:** Employs `Parallel.ForEachAsync` with `ParallelOptions { MaxDegreeOfParallelism = 4 }` to strictly cap active network/disk requests at 4 simultaneously, fulfilling the requirement without manual semaphores or explicit thread loops.
+* **Timing Analysis (~8 Seconds):** 
+  * Total emails = 30.
+  * Max concurrency = 4.
+  * Number of batches = $\lceil 30 \div 4 \rceil = 7.5$ batches.
+  * Given each send takes approximately 1 second of I/O latency (`Task.Delay(1000)`), processing 7.5 full batches sequentially takes roughly $7.5 \times 1\text{s} \approx 8\text{ seconds}$.
+  # Phase 4 — Advanced Concurrency Architecture & Analysis (Tasks 10.1–10.4)
+
+This document provides technical justifications, architectural trade-offs, and conceptual answers for the advanced concurrency patterns implemented in Phase 4.
+
+---
+
+## 1. For each of Tasks 10.1–10.4: which tool did you use, and why can't "start, then await one by one" meet the requirement?
+
+* **Task 10.1 (Live Checkout Progress):** 
+  * *Tool Used:* `Task.WhenEach`
+  * *Why "start, then await one by one" fails:* Awaiting tasks sequentially in the order they were started violates real-time requirements. If Task #1 takes 5 seconds and Task #2 takes 0.1 seconds, the old sequential loop would freeze on Task #1, leaving the user blind to the completion of Task #2. `Task.WhenEach` streams tasks as they finish dynamically.
+* **Task 10.2 (Customer Dashboard):** 
+  * *Tool Used:* `Task.WhenAll`
+  * *Why "start, then await one by one" fails:* Sequential awaiting (`await profile; await orders; ...`) forces tasks to run one after another. If each simulated DB call takes 150 ms, sequential execution takes 600 ms ($4 \times 150\text{ms}$). `Task.WhenAll` executes them concurrently, reducing total execution time to ~150 ms (the slowest single load).
+* **Task 10.3 (Fastest Shipping Quote):** 
+  * *Tool Used:* `Task.WhenAny` combined with `CancellationTokenSource`
+  * *Why "start, then await one by one" fails:* A sequential approach would force the system to wait for Carrier A to finish completely before even checking Carrier B, defeating the purpose of a competitive race and breaching time budgets.
+* **Task 10.4 (Fraud Scoring & Email Re-send):** 
+  * *Tool Used:* `Parallel.For` (CPU-bound) and `Parallel.ForEachAsync` (I/O-bound)
+  * *Why "start, then await one by one" fails:* Sequential loops process 10,000 CPU-intensive calculations or 30 network requests one by one on a single thread, causing severe performance degradation and total underutilization of multi-core hardware or bounded concurrency channels.
+
+---
+
+## 2. In 10.2, when several loads fail, how do you get every exception? What does a plain `await` give you?
+
+* **Plain `await`:** When awaiting a composite task expression (like `Task.WhenAll`), a plain `await` unrolls and throws **only the first exception** encountered, completely silencing and hiding any other concurrent exceptions that occurred simultaneously in other tasks.
+* **Getting Every Exception:** By inspecting `Task.WhenAll` via its resulting `.Exception` property (or catching `AggregateException`), developers can access `InnerExceptions`, which contains a complete collection of **every exception** thrown across all concurrent operations, satisfying multi-failure reporting requirements.
+
+---
+
+## 3. In 10.3, what happens to the losing carriers if you never cancel them?
+
+If losing carriers are never cancelled:
+1. **Resource Leakage:** They continue consuming thread pool resources, memory, and database/network connection sockets in the background.
+2. **Useless Processing:** They waste system compute cycles performing calculations or network handshakes whose results will be discarded.
+3. **Ghost Side-Effects:** If a losing carrier's background task eventually attempts to write logs or update metrics after the order has already been closed, it can lead to race conditions, polluted data stores, or unhandled background exceptions.
+
+---
+
+## 4. Why does 10.4 A get faster with more CPU cores, while 10.4 B does not depend on the number of cores?
+
+* **10.4 A (CPU-Bound Fraud Scoring):** This workload is constrained purely by raw processing power (floating-point/arithmetic calculations). More CPU cores allow true hardware parallelism (`Parallel.For`), splitting the 10,000 iterations across physical/logical cores to execute simultaneously.
+* **10.4 B (I/O-Bound Email Re-send):** This workload is constrained by external network/disk latency, not CPU capacity. It is bounded explicitly by `MaxDegreeOfParallelism = 4`. Whether the host machine has 4 cores or 64 cores, the operation speed remains tied strictly to the artificial 1-second network delay per batch, making core count irrelevant.
+
+---
+
+## 5. What is the difference between parallel work (10.4 A) and concurrent asynchronous work (10.1)?
+
+* **Parallel Work (10.4 A):** Focuses on **CPU-bound computation**. It utilizes multiple CPU cores simultaneously to execute heavy workloads at the exact same physical instant (Data Parallelism).
+* **Concurrent Asynchronous Work (10.1):** Focuses on **I/O-bound throughput**. It uses non-blocking execution (`async`/`await`) to manage multiple tasks on a small number of threads by yielding control back to the thread pool while waiting for external responses, without requiring multiple CPU cores.
+
+---
+
+## 6. Cancelled Run Analysis (`--cancel-after`)
+
+When a cancellation token is triggered mid-workflow (e.g., via user `Ctrl+C` or a strict timeout):
+* **Orders:** Any order currently in an intermediate step (such as waiting for payment or saving) immediately halts. Orders that passed the payment step trigger the **Saga/Compensation Pattern**, executing automatic rollbacks.
+* **Stock:** Reserved inventory items for cancelled or interrupted orders are immediately released back to `products.json` via `ReleaseStockAsync(CancellationToken.None)` to prevent permanent inventory lock.
+* **Payments:** Any captured payments associated with interrupted database saves are successfully refunded via `RefundAsync()`, ensuring financial consistency and preventing orphan charges.
