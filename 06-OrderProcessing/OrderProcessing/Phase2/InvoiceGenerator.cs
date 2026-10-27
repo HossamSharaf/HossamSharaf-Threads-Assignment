@@ -10,10 +10,17 @@ namespace ConsoleApp1
 
         public async Task GenerateAsync(Order order, CancellationToken ct = default)
         {
-            Log.Info(Source, $"Generating invoice for Order #{order.Id}...");
+            Log.Info(Source, $"Generating invoice PDF/text for Order #{order.Id}...");
 
-            // محاكاة تأخير الـ I/O أو طباعة الفاتورة
-            await SimulatedLatency.SimulateExternalApiAsync(Source, ct);
+            // محاكاة عمل معالجة ثقيلة على المعالج (CPU-bound) مثل ضغط وتنسيق الـ PDF
+            await Task.Run(() =>
+            {
+                long dummySum = 0;
+                for (int i = 0; i < 20_000_000; i++)
+                {
+                    dummySum += i;
+                }
+            }, ct);
 
             var dir = Path.Combine("Data", "invoices");
             Directory.CreateDirectory(dir);

@@ -37,3 +37,15 @@ File.ReadAllText (Synchronous): Synchronously blocks the calling thread complete
 File.ReadAllTextAsync (Asynchronous): Initiates an asynchronous read request with the OS kernel and returns an uncompleted Task, immediately releasing the calling thread back to the thread pool.
 
 Does the async version occupy a thread while the disk is reading?No, zero managed threads are occupied. The underlying OS utilizes hardware-level I/O Completion Ports (IOCP) on Windows (or epoll / io_uring on Linux). The hardware controller executes the physical disk read, issuing a hardware interrupt upon completion to push a callback back onto the .NET ThreadPool to resume code execution.
+
+### Why does `Task.Run()` fit for the CPU-bound invoice generation step, but NOT for database/I-O calls?
+
+1. **For CPU-Bound Operations (e.g., PDF Rendering / Heavy Computations):**
+   - Operations like rendering a complex PDF layout, cryptographic hashing, or running a 20,000,000-iteration loop consume continuous CPU cycles. 
+   - If executed synchronously on an asynchronous request thread (such as an ASP.NET request thread or a parallel worker loop), it will **block the execution thread** from doing other work, spiking CPU usage and degrading throughput.
+   - Using `Task.Run()` offloads this heavy computational workload to a background thread pool worker, keeping the main calling thread free to handle other asynchronous continuations or incoming orders.
+
+2. **Why NOT for Database or File I/O Calls?**
+   - Database queries, network requests, and disk reads/writes are **I/O-bound** operations, not CPU-bound.
+   - .NET's underlying drivers and file system APIs already provide native asynchronous methods (`File.WriteAllTextAsync`, ADO.NET async execution, etc.) that interact directly with the OS kernel and hardware I/O Completion Ports (IOCP) **without consuming a CPU thread** while waiting for data.
+   - Wrapping an existing I/O-bound call in `Task.Run()` (often referred to as an "Async-over-Sync" anti-pattern or unnecessary thread-pool dispatch) forces a worker thread to sit idle just waiting for the I/O to finish, which actually **wastes thread resources** and reduces overall system scalability.
