@@ -108,3 +108,57 @@ Because an await expression can resume execution on an entirely different thread
 Why it oversold: Without protection, two concurrent orders (e.g., #10 and #11) read the product stock file at the exact same moment, both saw a stock quantity of 1, both passed the validation check, both decremented the value to 0 (or -1), and both saved the file. This race condition led to selling the same item twice (Overselling).
 
 How it was prevented: We implemented an asynchronous synchronization primitive, SemaphoreSlim(1, 1), acting as a business lock around the critical section inside ProductRepository. When an order enters ReserveStockAsync, it acquires the lock asynchronously (await _businessLock.WaitAsync()). Subsequent concurrent requests must wait until the active thread finishes reading, validating, updating, and releasing the lock via _businessLock.Release(). Thus, the second request reads the updated stock (0), safely rejecting the reservation.
+
+# Sync vs Async Architecture Comparison (Task 9.6)
+
+This document provides an architectural breakdown and comparative performance analysis between the **Synchronous (Thread-Per-Request)** and **Asynchronous (`async`/`await`)** order processing models in the E-Commerce System.
+
+---
+
+## Technical Questions & Architectural Answers
+
+### 1. Does `async` make one order's workflow faster?
+**No.** Asynchronous programming does **not** decrease the execution latency or speed up the processing time of a single, isolated order's workflow.
+
+* **Sequential Execution:** An `async` order processing sequence (e.g., fetch customer $\rightarrow$ reserve stock $\rightarrow$ calculate pricing $\rightarrow$ process payment) executes the exact same I/O operations as a synchronous one. The network or disk latencies remain unchanged.
+* **Minor Overhead:** Executing a single task asynchronously introduces a tiny overhead due to the compiler generating an internal state machine (`IAsyncStateMachine`), allocating `Task` objects, and context switching.
+* **Core Value:** `async` is designed to optimize **system throughput and concurrent capacity**, not single-threaded execution speed.
+
+---
+
+### 2. Why does `async` scale better for many orders?
+Async scales significantly better under high concurrent request volumes due to **Non-Blocking I/O** and efficient **ThreadPool management**:
+
+* **I/O Completion Ports (IOCP):** When an `async` task awaits an external operation (database query, payment gateway API, email delivery), its thread is immediately released back to the ThreadPool to process other incoming orders instead of sitting blocked.
+* **Minimal Memory Footprint:** Spawning a native OS thread allocates roughly **1 MB of stack memory**. In contrast, an awaiting `Task` is merely an object in heap memory consuming a few hundred bytes.
+* **High Resource Efficiency:** A fixed pool of worker threads matching the hardware CPU core count can comfortably manage thousands of concurrent `Task` state machines without thread starvation.
+
+---
+
+### 3. What happens to the sync version with 1,000 orders?
+If 1,000 concurrent orders are processed synchronously using a dedicated thread-per-request model:
+
+1. **Memory Exhaustion:** Allocating 1,000 native OS threads requires approximately **1 GB of RAM** strictly for thread stack memory before any business logic is executed.
+2. **Context Switching Thrashing:** The OS CPU scheduler spends more clock cycles context-switching between 1,000 blocked threads (saving/restoring CPU registers and stack pointers) than executing actual program logic.
+3. **Application Collapse:** The application will experience severe latency degradation, ThreadPool exhaustion, `OutOfMemoryException` crashes, or complete unresponsiveness under high traffic spikes (e.g., Black Friday sales).
+
+---
+
+### 4. Why is `async` essential for apps that call databases, files, and APIs?
+Modern backend web services and microservices are predominantly **I/O-bound** rather than CPU-bound.
+
+* **Hardware Bottlenecks:** Over 95% of an order pipeline's lifecycle is spent waiting for data packets to travel over the network (payment gateways, SMTP servers) or disk hardware I/O (database persistence).
+* **Eliminating Blocked Threads:** Synchronous blocking calls (`Thread.Sleep`, `.Result`, `.Wait()`) lock up valuable execution threads while waiting for I/O hardware responses.
+* **Maximum Throughput:** Using native asynchronous drivers allows web servers (such as ASP.NET Core / Kestrel) to process maximum concurrent throughput with minimal hardware hardware resources.
+
+---
+
+## Benchmark Metrics Summary
+
+| Metric | Synchronous Model (`SyncOrderProcessor`) | Asynchronous Model (`OrderProcessorV2`) |
+| :--- | :--- | :--- |
+| **Execution Model** | Dedicated thread per order (`Thread.Sleep`) | Task-based non-blocking I/O (`async`/`await`) |
+| **Concurrency Strategy** | 10 dedicated OS threads spawned | Reuses existing ThreadPool threads |
+| **Memory Allocation** | ~10 MB stack memory allocated | Negligible (`Task` heap allocations) |
+| **Scalability Horizon** | Hard-limited by OS memory and thread limits | Scales to thousands of concurrent requests |
+| **Failure Mode Under Load** | Context switching thrashing & OOM crashes | Upstream API rate limits / Connection pool limits |
