@@ -209,3 +209,13 @@ Historically, developers achieved this by placing tasks in a `List<Task>`, using
 To fulfill the core performance and resilience requirements (R1–R5), `Task.WhenAll` is architecturally mandated:
 1. **Concurrent I/O (R2 & R3):** Profile, orders, payments, and emails queries must execute simultaneously over simulated DB threads. Using `Task.WhenAll` ensures that the total execution duration equals the time taken by the *slowest individual query* rather than compounding their sum.
 2. **Multiple Failure Reporting (R4):** Standard sequential awaiting stops at the first encountered exception. By wrapping tasks in `Task.WhenAll` and inspecting its `.Exception.InnerExceptions`, the system captures and reports *all* concurrent failures simultaneously (e.g., combining a missing customer record error and a payment timeout error in a single aggregated report).
+
+## Task 10.3 — Fastest Shipping Quote (Race Condition & Time Budgeting)
+
+### Chosen Tool: `Task.WhenAny` combined with `CancellationTokenSource` and Time Budgets
+
+**Justification:**
+To satisfy the strict requirements of racing multiple asynchronous providers (R1–R7), `Task.WhenAny` is the ideal primitive:
+1. **First-to-Finish Wins (R2):** `Task.WhenAny` monitors multiple tasks simultaneously and returns the reference of whichever task completes first, enabling optimal performance by not waiting for slower services.
+2. **Resilience to Early Failures (R2):** Unlike simple race implementations that crash on the first error, our loop inspects `finishedTask.IsCompletedSuccessfully`. If the fastest-finishing carrier fails, the service ignores it and continues awaiting the remaining active tasks.
+3. **Immediate Resource Cancellation (R3 & R6):** A linked `CancellationTokenSource` tied to a 1.2-second hard time budget (`TimeSpan.FromSeconds(1.2)`) and triggered upon the first successful quote automatically signals all remaining running carrier tasks to abort execution, saving network and CPU bandwidth.
