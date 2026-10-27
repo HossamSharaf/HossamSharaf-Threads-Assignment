@@ -189,3 +189,23 @@ Modern backend web services and microservices are predominantly **I/O-bound** ra
 ### Why is `async void` acceptable for Event Handlers?
 * **Delegate Signature Constraints:** UI frameworks (WPF, WinForms) and standard C# event patterns rely on delegates returning `void` (e.g., `public delegate void EventHandler(object sender, EventArgs e)`).
 * **Framework Compatibility:** `async void` was explicitly language-engineered to allow asynchronous operations inside event handler delegates without breaking signature contracts. Event handler implementations must contain internal top-level `try-catch` blocks to prevent unhandled application crashes.
+
+## Task 10.1 — Live Checkout Progress
+
+### Chosen Tool: `Task.WhenEach` (Introduced in .NET 9)
+
+**Justification:**
+To satisfy the requirement of processing tasks precisely as they complete (R2) without searching or rebuilding a list of unfinished tasks (R4), `Task.WhenEach` is the optimal tool. 
+
+Historically, developers achieved this by placing tasks in a `List<Task>`, using a `while(tasks.Count > 0)` loop with `Task.WhenAny`, and manually invoking `tasks.Remove(completedTask)`. This legacy approach was highly inefficient—resulting in **O(N²)** time complexity and triggering unnecessary memory allocations on every loop iteration. 
+
+`Task.WhenEach` returns an `IAsyncEnumerable<Task<T>>` that streams tasks into the `await foreach` loop the exact millisecond they transition to a completed state. It completely eliminates list manipulation, provides lock-free synchronization, and delivers maximum performance for real-time monitoring of concurrent batch operations.
+
+## Task 10.2 — Customer Dashboard (Parallel Data Aggregation)
+
+### Chosen Tool: `Task.WhenAll` with `AggregateException` Handling
+
+**Justification:**
+To fulfill the core performance and resilience requirements (R1–R5), `Task.WhenAll` is architecturally mandated:
+1. **Concurrent I/O (R2 & R3):** Profile, orders, payments, and emails queries must execute simultaneously over simulated DB threads. Using `Task.WhenAll` ensures that the total execution duration equals the time taken by the *slowest individual query* rather than compounding their sum.
+2. **Multiple Failure Reporting (R4):** Standard sequential awaiting stops at the first encountered exception. By wrapping tasks in `Task.WhenAll` and inspecting its `.Exception.InnerExceptions`, the system captures and reports *all* concurrent failures simultaneously (e.g., combining a missing customer record error and a payment timeout error in a single aggregated report).
