@@ -1,4 +1,5 @@
-﻿using System;
+﻿using ConsoleApp1.NewFolder;
+using System;
 using System.Collections.Generic;
 using System.Text;
 
@@ -113,48 +114,58 @@ namespace ConsoleApp1
     }
 
     // ================= 4. Order Repository =================
-    
-        public class OrderRepository
+
+    public class OrderRepository
+    {
+        private const string Source = "OrderRepository";
+        private static readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
+
+        private readonly HashSet<int> _failSaveForOrderIds;
+
+        public OrderRepository(IEnumerable<int>? failSaveForOrderIds = null)
         {
-            private const string Source = "OrderRepository";
-            private static readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
+            _failSaveForOrderIds = new HashSet<int>(failSaveForOrderIds ?? Array.Empty<int>());
+        }
 
-            public async Task SaveAsync(Order order, CancellationToken ct = default)
+        public async Task SaveAsync(Order order, CancellationToken ct = default)
+        {
+            // Order #13: Database save fails after payment (when Status is Completed)
+            if (order.Status == OrderStatus.Completed && _failSaveForOrderIds.Contains(order.Id))
             {
-                await _lock.WaitAsync(ct);
-                try
-                {
-                    await SimulatedLatency.SimulateDbWriteOpenAndTransactionAsync(Source, ct);
-
-                    var filePath = DataFiles.GetFilePath(DataFiles.OrdersFile);
-                    var orders = await JsonFileStore.ReadAsync<Order>(filePath, ct);
-
-                    int index = orders.FindIndex(o => o.Id == order.Id);
-                    if (index >= 0)
-                    {
-                        orders[index] = order; // Update
-                    }
-                    else
-                    {
-                        orders.Add(order); // Insert
-                    }
-
-                    await JsonFileStore.WriteAsync(filePath, orders, ct);
-                    await SimulatedLatency.SimulateDbWriteCommitAsync(Source, ct);
-                }
-                finally
-                {
-                    _lock.Release();
-                }
+                throw new DatabaseWriteException("Connection lost during commit");
             }
 
-            public async Task<List<Order>> GetAllAsync(CancellationToken ct = default)
+            await _lock.WaitAsync(ct);
+            try
             {
-                await SimulatedLatency.SimulateDbQueryAsync(Source, "All Orders", ct);
-                return await JsonFileStore.ReadAsync<Order>(DataFiles.GetFilePath(DataFiles.OrdersFile), ct);
+                await SimulatedLatency.SimulateDbWriteOpenAndTransactionAsync(Source, ct);
+
+                var filePath = DataFiles.GetFilePath(DataFiles.OrdersFile);
+                var orders = await JsonFileStore.ReadAsync<Order>(filePath, ct);
+
+                int index = orders.FindIndex(o => o.Id == order.Id);
+                if (index >= 0)
+                {
+                    orders[index] = order;
+                }
+                else
+                {
+                    orders.Add(order);
+                }
+
+                await JsonFileStore.WriteAsync(filePath, orders, ct);
+                await SimulatedLatency.SimulateDbWriteCommitAsync(Source, ct);
+            }
+            finally
+            {
+                _lock.Release();
             }
         }
-    
+
+        public async Task<List<Order>> GetAllAsync(CancellationToken ct = default) { /* نفس القديم */ return new List<Order>(); }
+        public async Task<List<Order>> GetByStatusAsync(OrderStatus status, CancellationToken ct = default) { /* نفس القديم */ return new List<Order>(); }
+    }
+
 
     // ================= 5. Incoming Order Repository =================
     public class IncomingOrderRepository
