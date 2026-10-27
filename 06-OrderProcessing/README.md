@@ -162,3 +162,30 @@ Modern backend web services and microservices are predominantly **I/O-bound** ra
 | **Memory Allocation** | ~10 MB stack memory allocated | Negligible (`Task` heap allocations) |
 | **Scalability Horizon** | Hard-limited by OS memory and thread limits | Scales to thousands of concurrent requests |
 | **Failure Mode Under Load** | Context switching thrashing & OOM crashes | Upstream API rate limits / Connection pool limits |
+
+## Task 9.7 — Fire-and-Forget Investigation & Best Practices
+
+### When is `await` necessary?
+* **Sequential Integrity:** Whenever a subsequent step depends on the completion or output of a previous asynchronous step.
+* **Exception Handling:** Whenever an operation can fail and its exception needs to be caught, logged, or handled using standard `try-catch` blocks.
+* **Resource Lifetime Management:** To prevent background tasks from being aborted prematurely when web HTTP request contexts finish or when console application processes exit.
+
+---
+
+### When is Fire-and-Forget acceptable (if ever)?
+* **Direct Fire-and-Forget is an Anti-Pattern:** Plain un-awaited tasks (`_ = Task.Run(...)` or missing `await`) should be avoided in production application code due to unhandled exception risks and thread-termination issues.
+* **Production-Safe Out-of-Band Work:** If an operation should run asynchronously without holding up the response time (e.g., non-critical analytics, logging):
+  1. **Background Queues / Workers:** Enqueue messages to a thread-safe `Channel<T>` and process them using a dedicated `BackgroundService` (`IHostedService`).
+  2. **Tracked Tasks with Continuations:** If using `Task.Run`, attach explicit error logging via `.ContinueWith(..., TaskContinuationOptions.OnlyOnFaulted)`.
+
+---
+
+### Why is `async void` dangerous?
+1. **Uncatchable Exceptions:** Callers cannot `await` an `async void` method. Exceptions thrown inside `async void` methods bypass caller `try-catch` blocks and bubble directly up to the `SynchronizationContext`, typically crashing the entire application process.
+2. **Untrackable Execution State:** The caller has no mechanism to determine when an `async void` method starts, completes, or fails, making caller synchronization and unit testing impossible.
+
+---
+
+### Why is `async void` acceptable for Event Handlers?
+* **Delegate Signature Constraints:** UI frameworks (WPF, WinForms) and standard C# event patterns rely on delegates returning `void` (e.g., `public delegate void EventHandler(object sender, EventArgs e)`).
+* **Framework Compatibility:** `async void` was explicitly language-engineered to allow asynchronous operations inside event handler delegates without breaking signature contracts. Event handler implementations must contain internal top-level `try-catch` blocks to prevent unhandled application crashes.
