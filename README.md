@@ -1,2 +1,4 @@
-# HossamSharaf-Threads-Assignment
-Assignment repo for assignment/1-8 (Threads Assignment)
+# Details
+## Name : Hossam Shawky Sharaf Eldein
+
+## Group : 3
