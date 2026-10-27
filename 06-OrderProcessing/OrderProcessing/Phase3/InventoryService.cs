@@ -13,22 +13,26 @@ namespace ConsoleApp1.NewFolder
             _productRepo = productRepo;
         }
 
-        public async Task<bool> ReserveStockAsync(Order order, CancellationToken ct = default)
+        // تم التعديل لإرجاع Tuple يحتوي على حالة النجاح واسم المنتج الذي تسبب في الفشل
+        public async Task<(bool Success, string FailedProductName)> ReserveStockAsync(Order order, CancellationToken ct = default)
         {
             var reservedItems = new List<(int ProductId, int Qty)>();
 
             foreach (var item in order.Items)
             {
+                var product = await _productRepo.GetByIdAsync(item.ProductId, ct);
+                string productName = product?.Name ?? $"Product #{item.ProductId}";
+
                 bool reserved = await _productRepo.ReserveStockAsync(item.ProductId, item.Quantity, ct);
                 if (!reserved)
                 {
-                    // Rollback on failure (All-or-Nothing)
+                    // Rollback
                     await ReleaseReservedItemsAsync(reservedItems, ct);
-                    return false;
+                    return (false, productName);
                 }
                 reservedItems.Add((item.ProductId, item.Quantity));
             }
-            return true;
+            return (true, string.Empty);
         }
 
         public async Task ReleaseStockAsync(Order order, CancellationToken ct = default)
