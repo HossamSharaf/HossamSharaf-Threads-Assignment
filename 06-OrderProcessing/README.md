@@ -1,3 +1,111 @@
+# E-Commerce Order Processing System
+
+## Project Overview
+
+This project explores synchronous and asynchronous order processing, concurrency, thread safety, cancellation, and performance trade-offs across four phases. The technical Q&A currently available is preserved below.
+
+> **Completion note:** The source provided contains conceptual answers and some example log output, but it does not include the actual project files, measured benchmark results for every requested comparison, or console screenshots. Sections marked **To complete from the project run/source** need to be filled using the real implementation and its output; do not treat example estimates as measured benchmark results.
+
+## 1. How to Run Each Phase
+
+**To complete from the project source:** Add the exact build/run commands and the menu options for Phases 1–4. The project requirement says the target framework must be `net10.0`.
+
+Suggested command format (verify against the actual project before using):
+
+```bash
+dotnet build
+dotnet run
+```
+
+From the application menu, select the relevant phase. Record any required command-line arguments, including the cancellation option such as `--cancel-after`, if supported by the implementation.
+
+### Data folder location
+
+**To complete from the project source:** Document the exact path where `Data/` is created. Confirm whether it is relative to the current working directory, the project directory, or the executable output directory, and list the JSON files created by each phase.
+
+## 2. Project Structure and Class Responsibilities
+
+**To complete from the project source:** Add the actual directory tree and describe each class using its real name and responsibility. The Q&A below mentions concepts/classes such as `ProductRepository`, `SyncOrderProcessor`, and `OrderProcessorV2`, but the complete source tree was not included, so this section should be verified against the repository.
+
+Example structure template (replace with the real tree):
+
+```text
+ProjectRoot/
+├── Data/                 # Runtime data files; confirm actual location
+├── sample-output/        # Final JSON output for each phase
+├── ...                   # Actual source folders/classes
+├── Program.cs            # Entry point/menu, if applicable
+└── README.md
+```
+
+## 3. Storage Design and Thread Safety
+
+The existing Q&A describes JSON/file-based persistence and an asynchronous business lock around stock reservation. In particular, the Phase 2 answer explains that unprotected concurrent stock reservations can both read the same available quantity and oversell. It describes using `SemaphoreSlim(1, 1)` around the read/validate/update critical section in `ProductRepository`, with `WaitAsync()` to acquire the lock and `Release()` to release it.
+
+**To complete from the project source:** List every JSON file, its schema/example JSON, and the protection mechanism used for each shared file. Confirm whether all file reads/writes use the same synchronization strategy and how cancellation/errors are handled.
+
+## 4. Performance Results
+
+Use actual measured results from repeatable runs. Do not enter estimates as benchmark measurements. Record the elapsed time, distinct thread IDs observed, and `ThreadPool.ThreadCount` where applicable.
+
+| Phase / scenario | Elapsed time | Distinct threads | `ThreadPool.ThreadCount` | Notes |
+|---|---:|---:|---:|---|
+| Phase 1 — synchronous validation | To measure | To capture | To capture | |
+| Phase 1 — asynchronous sequential validation | To measure | To capture | To capture | |
+| Phase 2 — pricing sequential | To measure | To capture | To capture | |
+| Phase 2 — pricing concurrent | To measure | To capture | To capture | |
+| Phase 2 — concurrent processing | To measure | To capture | To capture | |
+| Phase 3 — sync (10 threads) | To measure | To capture | To capture | |
+| Phase 3 — async (10 tasks) | To measure | To capture | To capture | |
+| Phase 4 — dashboard | To measure | To capture | To capture | |
+| Phase 4 — shipping quotes | To measure | To capture | To capture | |
+| Phase 4 — fraud scoring sequential | To measure | To capture | To capture | |
+| Phase 4 — fraud scoring parallel | To measure | To capture | To capture | |
+| Phase 4 — email re-send | To measure | To capture | To capture | |
+
+For meaningful comparisons, use the same input data and workload, run each case more than once, and report whether the values are one run or an average. Thread counts are observations from a run and may vary between runs and machines.
+
+## 5. Console Screenshot Checklist
+
+Add real screenshots from the application runs to a folder such as `docs/screenshots/`, then link them here. The uploaded source did not contain image files, so none are embedded yet.
+
+- [ ] Race-condition demo
+- [ ] Faulted task
+- [ ] Payment timeout
+- [ ] Refund / compensation
+- [ ] Email retry
+- [ ] Both fire-and-forget demos
+- [ ] Every Phase 4 task (10.1–10.4)
+- [ ] One cancelled run
+- [ ] Phase 1–4 menu/runs, where useful to demonstrate each phase runs successfully
+
+Suggested linking format once screenshots exist:
+
+```markdown
+![Race-condition demo](docs/screenshots/race-demo.png)
+```
+
+## 6. Problems Found and How They Were Solved
+
+The provided Q&A supports these implementation issues and solutions:
+
+| Problem | Cause | Solution described in the source |
+|---|---|---|
+| Stock overselling | Concurrent orders can read the same stock quantity before either update is saved | Protect the stock reservation critical section with `SemaphoreSlim(1, 1)` and `WaitAsync()` / `Release()` |
+| Threads blocked during delays | `Thread.Sleep()`, `.Wait()`, or `.Result` block a thread | Prefer `Task.Delay()` and `await` for asynchronous waiting; avoid sync-over-async |
+| Sequential work takes cumulative time | Each operation is awaited before the next begins | Start independent operations together and use the suitable concurrency primitive (`Task.WhenAll`, `Task.WhenEach`, `Task.WhenAny`, or parallel loops) |
+| Fire-and-forget failures can be missed | The caller does not await or track the task | Prefer awaited/tracked work; for production background work, use a background queue/worker or explicit fault logging |
+| Losing shipping tasks keep running | Other carrier tasks are not cancelled after a successful quote | Use a `CancellationTokenSource` and cancel losing work when appropriate |
+| Partial order processing can leave inconsistent state | Cancellation/failure may occur after stock reservation or payment capture | Use compensation: release reserved stock and refund captured payments, as described in the Phase 4 Q&A |
+
+**To complete from the project experience:** Add any additional bugs actually encountered, their reproduction steps, the final fix, and evidence that the fix works.
+
+## 7. Answers to Questions in Phases 1–4
+
+The technical questions and answers supplied in the uploaded document are preserved below.
+
+---
+
 # Phase 1 — Data Access & Sequential Validation (Q&A)
 
 This document contains the answers to the Phase 1 technical evaluation questions for the **E-Commerce Order Processing System**.
@@ -292,3 +400,12 @@ When a cancellation token is triggered mid-workflow (e.g., via user `Ctrl+C` or 
 * **Orders:** Any order currently in an intermediate step (such as waiting for payment or saving) immediately halts. Orders that passed the payment step trigger the **Saga/Compensation Pattern**, executing automatic rollbacks.
 * **Stock:** Reserved inventory items for cancelled or interrupted orders are immediately released back to `products.json` via `ReleaseStockAsync(CancellationToken.None)` to prevent permanent inventory lock.
 * **Payments:** Any captured payments associated with interrupted database saves are successfully refunded via `RefundAsync()`, ensuring financial consistency and preventing orphan charges.
+
+## Final Submission Checklist
+
+- [ ] Target framework is `net10.0`.
+- [ ] All four phases run from the menu.
+- [ ] Files conform to requirements 7.3, 8.4, 9.4, and 10.1.
+- [ ] `sample-output/` contains the final JSON files for each phase.
+- [ ] This README explains running the phases, Data location, project structure/classes, storage/thread safety, performance results, screenshots, problems/solutions, and all Phase 1–4 answers.
+- [ ] Performance figures and screenshots have been collected from actual project runs.
